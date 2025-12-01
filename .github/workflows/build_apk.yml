@@ -40,6 +40,10 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
+      - name: Accept Android Licenses
+        run: |
+          yes | flutter doctor --android-licenses
+
       - name: Build APK
         run: |
           # Run flet build for Android
@@ -50,3 +54,4 @@ jobs:
         with:
           name: trade-yantra-apk
           path: build/apk/*.apk
+
