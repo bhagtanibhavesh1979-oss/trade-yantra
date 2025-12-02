@@ -61,6 +61,12 @@ class AppState:
         self.logs = []
         self.is_paused = False
         self.connected = False
+        
+        # Filter and sort state
+        self.filter_symbol = ""
+        self.filter_min_price = ""
+        self.filter_max_price = ""
+        self.sort_by = "none"
 
 state = AppState()
 
@@ -135,6 +141,7 @@ def smart_candle_fetch(req):
             return state.smart_api.getCandleData(req)
         except Exception as e:
             err_msg = str(e)
+            # Retry on timeouts or JSON errors
             if "Couldn't parse" in err_msg or "timed out" in err_msg or "Max retries" in err_msg:
                 wait = 4 * (i + 1)
                 print(f"  Retry {i+1}/{retries} in {wait}s due to error...")
@@ -340,18 +347,24 @@ def main(page: ft.Page):
         login_progress.visible = False
         page.update()
 
+    # Login View with Logo
+    logo_widget = ft.Image(src="logo.png", width=100, height=100, fit=ft.ImageFit.CONTAIN) if os.path.exists("logo.png") else ft.Container()
+    
     login_view = ft.Column([
-        ft.Text("Trade Yantra", size=30, weight="bold", color="blue"), ft.Divider(),
+        logo_widget,
+        ft.Text("Trade Yantra", size=32, weight="bold", color="#667EEA"),
+        ft.Text("Smart Trading Alerts", size=14, color="grey"),
+        ft.Divider(height=20, color="transparent"),
         api_input, client_input, pass_input, totp_input,
-        ft.ElevatedButton("Login", on_click=handle_login),
+        ft.ElevatedButton("Login", on_click=handle_login, bgcolor="#667EEA", color="white", height=45),
         ft.Row([login_progress, login_status])
-    ], alignment="center", horizontal_alignment="center", spacing=20)
+    ], alignment="center", horizontal_alignment="center", spacing=15)
 
     body_container = ft.Container(expand=True, padding=10)
 
     def get_watchlist_view():
         controls = []
-        status_color = "green" if state.live_feed_status == "CONNECTED" else "red"
+        status_color = "#48BB78" if state.live_feed_status == "CONNECTED" else "#F56565"
         
         search_icon = "search"
         search_disabled = False
@@ -362,39 +375,125 @@ def main(page: ft.Page):
             search_tooltip = "Loading Master Data..."
 
         controls.append(ft.Row([
-            ft.Text(f"Feed: {state.live_feed_status}", color=status_color, size=12),
-            ft.IconButton(search_icon, on_click=open_search_bs, tooltip=search_tooltip, disabled=search_disabled),
-            ft.IconButton("refresh", on_click=lambda e: refresh_all_data(page), tooltip="Fetch Data")
+            ft.Text(f"Feed: {state.live_feed_status}", color=status_color, size=12, weight="bold"),
+            ft.Row([
+                ft.IconButton(search_icon, on_click=open_search_bs, tooltip=search_tooltip, 
+                             disabled=search_disabled, icon_color="#667EEA"),
+                ft.IconButton("refresh", on_click=lambda e: refresh_all_data(page), 
+                             tooltip="Fetch Data", icon_color="#667EEA")
+            ])
         ], alignment="spaceBetween"))
-        controls.append(ft.Divider())
+        
+        # Filter and Sort Controls
+        def on_filter_change(e):
+            state.filter_symbol = e.control.value.upper() if e.control.value else ""
+            update_view()
+        
+        def on_min_price_change(e):
+            state.filter_min_price = e.control.value
+            update_view()
+        
+        def on_max_price_change(e):
+            state.filter_max_price = e.control.value
+            update_view()
+        
+        def on_sort_change(e):
+            state.sort_by = e.control.value
+            update_view()
+        
+        def clear_all(e):
+            state.filter_symbol = ""
+            state.filter_min_price = ""
+            state.filter_max_price = ""
+            update_view()
+        
+        controls.append(ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.TextField(label="Filter Symbol", value=state.filter_symbol, dense=True, 
+                                on_change=on_filter_change, expand=True, border_color="#2D3748"),
+                    ft.Dropdown(label="Sort", value=state.sort_by, dense=True, width=140,
+                               on_change=on_sort_change, border_color="#2D3748",
+                               options=[
+                                   ft.dropdown.Option("none", "Default"),
+                                   ft.dropdown.Option("sym_az", "Symbol A-Z"),
+                                   ft.dropdown.Option("sym_za", "Symbol Z-A"),
+                                   ft.dropdown.Option("price_low", "Price Low"),
+                                   ft.dropdown.Option("price_high", "Price High"),
+                               ])
+                ]),
+                ft.Row([
+                    ft.TextField(label="Min Price", value=state.filter_min_price, dense=True,
+                                width=90, on_change=on_min_price_change, keyboard_type=ft.KeyboardType.NUMBER,
+                                border_color="#2D3748"),
+                    ft.TextField(label="Max Price", value=state.filter_max_price, dense=True,
+                                width=90, on_change=on_max_price_change, keyboard_type=ft.KeyboardType.NUMBER,
+                                border_color="#2D3748"),
+                    ft.TextButton("Clear", on_click=clear_all, style=ft.ButtonStyle(color="#667EEA"))
+                ])
+            ]),
+            padding=12,
+            bgcolor="#222844",
+            border_radius=10,
+            border=ft.border.all(1, "#2D3748")
+        ))
+        controls.append(ft.Divider(height=10, color="transparent"))
+        
+        # Apply filters
+        filtered_list = state.watchlist
+        if state.filter_symbol:
+            filtered_list = [s for s in filtered_list if state.filter_symbol in s['symbol']]
+        if state.filter_min_price:
+            try:
+                min_p = float(state.filter_min_price)
+                filtered_list = [s for s in filtered_list if s.get('ltp', 0) >= min_p]
+            except: pass
+        if state.filter_max_price:
+            try:
+                max_p = float(state.filter_max_price)
+                filtered_list = [s for s in filtered_list if s.get('ltp', 0) <= max_p]
+            except: pass
+        
+        # Apply sorting
+        if state.sort_by == "sym_az":
+            filtered_list = sorted(filtered_list, key=lambda x: x['symbol'])
+        elif state.sort_by == "sym_za":
+            filtered_list = sorted(filtered_list, key=lambda x: x['symbol'], reverse=True)
+        elif state.sort_by == "price_low":
+            filtered_list = sorted(filtered_list, key=lambda x: x.get('ltp', 0))
+        elif state.sort_by == "price_high":
+            filtered_list = sorted(filtered_list, key=lambda x: x.get('ltp', 0), reverse=True)
         
         lv = ft.ListView(expand=True, spacing=10)
-        for stock in state.watchlist:
+        for stock in filtered_list:
             price_txt = f"₹{stock.get('ltp', 0):.2f}"
             wc_txt = f"WC: {stock.get('wc', 0):.2f}"
             
             if stock.get('loading'):
-                price_content = ft.ProgressRing(width=16, height=16)
+                price_content = ft.ProgressRing(width=16, height=16, color="#667EEA")
             else:
                 price_content = ft.Column([
-                    ft.Text(price_txt, weight="bold", color="green"),
-                    ft.Text(wc_txt, size=10, color="grey")
-                ], alignment="end")
+                    ft.Text(price_txt, weight="bold", color="#48BB78", size=15),
+                    ft.Text(wc_txt, size=10, color="#A0AEC0")
+                ], alignment="end", horizontal_alignment="end")
 
             lv.controls.append(
                 ft.Container(
                     content=ft.Row([
                         ft.Column([
-                            ft.Text(stock['symbol'], weight="bold"),
-                            ft.Text(stock['token'], size=10, color="grey")
+                            ft.Text(stock['symbol'], weight="bold", size=14),
+                            ft.Text(stock['token'], size=10, color="#A0AEC0")
                         ]),
                         ft.Row([
                             price_content,
-                            ft.IconButton("delete", icon_color="red", 
+                            ft.IconButton("delete", icon_color="#F56565", 
                                           on_click=lambda e, t=stock['token']: remove_stock(t))
                         ])
                     ], alignment="spaceBetween"),
-                    padding=10, border=ft.border.only(bottom=ft.BorderSide(1, "#333333"))
+                    padding=12,
+                    bgcolor="#222844",
+                    border_radius=8,
+                    border=ft.border.all(1, "#2D3748")
                 )
             )
         controls.append(lv)
@@ -407,14 +506,43 @@ def main(page: ft.Page):
 
     def get_alerts_view():
         controls = []
-        controls.append(ft.Container(content=ft.Column([ft.Text("Strategy: 3-6-9 Logic"), ft.ElevatedButton("Auto-Generate Levels", on_click=generate_alerts_ui), ft.Switch(label="Pause Monitoring", value=state.is_paused, on_change=toggle_pause)]), padding=10, bgcolor="#222222", border_radius=10))
-        controls.append(ft.Divider())
-        lv = ft.ListView(expand=True, spacing=5)
-        if not state.alerts: lv.controls.append(ft.Text("No active alerts", color="grey"))
+        controls.append(ft.Container(
+            content=ft.Column([
+                ft.Text("Strategy: 3-6-9 Logic", weight="bold"),
+                ft.ElevatedButton("Auto-Generate Levels", on_click=generate_alerts_ui, 
+                                 bgcolor="#667EEA", color="white"),
+                ft.Switch(label="Pause Monitoring", value=state.is_paused, on_change=toggle_pause,
+                         active_color="#667EEA")
+            ], spacing=10),
+            padding=12,
+            bgcolor="#222844",
+            border_radius=10,
+            border=ft.border.all(1, "#2D3748")
+        ))
+        controls.append(ft.Divider(height=10, color="transparent"))
+        lv = ft.ListView(expand=True, spacing=8)
+        if not state.alerts: 
+            lv.controls.append(ft.Text("No active alerts", color="#A0AEC0"))
         for alert in state.alerts:
-            col = "green" if alert['condition'] == "ABOVE" else "red"
-            icon = "trending_up" if col=="green" else "trending_down"
-            lv.controls.append(ft.Container(content=ft.Row([ft.Row([ft.Icon(icon, color=col), ft.Column([ft.Text(alert['symbol'], weight="bold"), ft.Text(f"Target: {alert['price']}")])]), ft.IconButton("delete", icon_color="red", on_click=lambda e, uid=alert['id']: delete_alert(uid))], alignment="spaceBetween"), padding=10, bgcolor="#222222", border_radius=5))
+            col = "#48BB78" if alert['condition'] == "ABOVE" else "#F56565"
+            icon = "trending_up" if alert['condition'] == "ABOVE" else "trending_down"
+            lv.controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Row([
+                        ft.Icon(icon, color=col, size=20),
+                        ft.Column([
+                            ft.Text(alert['symbol'], weight="bold"),
+                            ft.Text(f"Target: ₹{alert['price']}", size=12, color="#A0AEC0")
+                        ], spacing=2)
+                    ], spacing=10),
+                    ft.IconButton("delete", icon_color="#F56565", 
+                                 on_click=lambda e, uid=alert['id']: delete_alert(uid))
+                ], alignment="spaceBetween"),
+                padding=12,
+                bgcolor="#222844",
+                border_radius=8,
+                border=ft.border.all(1, "#2D3748")
+            ))
         controls.append(lv)
         return ft.Column(controls, expand=True)
 
@@ -503,13 +631,22 @@ def main(page: ft.Page):
             )
         )
         if page.route == "/app":
+            # AppBar with logo
+            logo_small = ft.Image(src="logo.png", width=30, height=30, fit=ft.ImageFit.CONTAIN) if os.path.exists("logo.png") else None
+            
+            appbar_content = []
+            if logo_small:
+                appbar_content.append(logo_small)
+            appbar_content.append(ft.Text("Trade Yantra", size=18, weight="bold"))
+            
             page.views.append(
                 ft.View(
                     "/app",
                     [
-                        ft.AppBar(title=ft.Text("Trade Yantra"), bgcolor="#222222"),
-                        body_container,
-                        ft.Container(content=nav_row, bgcolor="#222222", padding=10)
+                        ft.AppBar(title=ft.Row(appbar_content, spacing=10), bgcolor="#1A1F3A"),
+                        ft.Container(content=body_container, bgcolor="#0A0E27", expand=True),
+                        ft.Container(content=nav_row, bgcolor="#1A1F3A", padding=10,
+                                   border=ft.border.only(top=ft.BorderSide(1, "#2D3748")))
                     ]
                 )
             )
